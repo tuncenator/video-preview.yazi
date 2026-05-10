@@ -45,9 +45,9 @@ The plugin picks one of three modes per file based on duration and size. All thr
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **native** | `D <= loop_seconds` (30s) and `size <= lazy_size_bytes` (50MB) | Upfront `fps=target_fps` extraction. Dense, smooth animated playback. Cold-cache extraction ~200ms-2s. |
+| **native** | `D <= loop_seconds` (30s) and `size <= lazy_size_bytes` (50MB) | Upfront `fps=target_fps` extraction with `-hwaccel auto` (picks vaapi/cuda/qsv/etc., falls back to software). Dense, smooth animated playback. Cold-cache extraction ~200ms-2s. |
 | **mid (timelapse)** | `loop_seconds < D <= mid_threshold` (300s) and `size <= lazy_size_bytes` | Upfront fps-filter sub-sampled. Even spacing, smooth animated playback. Cold extraction is a bounded full decode (a few seconds for typical H.264). |
-| **lazy (slideshow)** | `D > mid_threshold` **or** `size > lazy_size_bytes` | One frame per UI tick, fetched on demand via `ffmpeg -ss T -i FILE -frames:v 1`. No upfront cost. The full slideshow fills in over the first cycle, then it's cached. |
+| **lazy (slideshow)** | `D > mid_threshold` **or** `size > lazy_size_bytes` | One frame per UI tick, fetched via `ffmpeg -ss T -i FILE -frames:v 1` keyframe seek. On first hover lua kicks off a 4-way parallel prefetch of every slot, so most are cached by the time the slideshow reaches them. Slots written via `.tmp` + atomic rename so peek never reads a half-written jpeg. |
 
 The size override exists because a short high-bitrate clip (e.g. 4K HEVC, 20s, 300MB) is a slow decode despite being short -- lazy mode treats it like a long file and avoids the freeze.
 
@@ -99,7 +99,7 @@ require("video-preview"):setup {
 1. On first hover of a video, the lua plugin runs `preview.sh --probe` once. It returns the cache directory path and the clip duration without doing any decode work.
 2. Lua reads file size via `fs.cha` and picks one of three modes (native / mid / lazy).
 3. **Native or mid:** runs `preview.sh` synchronously for a single ffmpeg pass that writes all frames into the cache dir, marks it `.done`, and returns metadata. Subsequent peek ticks read frames directly from the cache and play them at `target_fps`.
-4. **Lazy:** computes an adaptive slide count, then per peek tick runs `preview.sh --slot I --ts T` which is one `ffmpeg -ss T -i FILE -frames:v 1` call. The slot file lands in the cache dir; lua shows it. Once all slots are cached the loop runs entirely from cache.
+4. **Lazy:** computes an adaptive slide count, then fires `preview.sh --prefetch` which self-forks to background and extracts every slot in parallel (4 concurrent ffmpeg keyframe seeks). Each peek tick reads its slot from the cache; if a slot isn't ready yet, lua falls back to a synchronous `preview.sh --slot I --ts T` for that one tick. Once everything is cached the loop runs entirely from cache.
 5. The progress bar shows source-time current/total plus a speedup badge (`2x`, `5x`, ...) whenever the source duration exceeds the loop's real playback length.
 6. A separate cleanup pass on each cold upfront extraction prunes stale cache entries by atime and size cap, running in the background so it doesn't add to user-visible latency.
 
