@@ -241,6 +241,19 @@ local function init_state(file_url)
 	}
 end
 
+local function maybe_log_render()
+	-- Env-gated debug hook. When VP_DEBUG_RENDER_LOG points at a writable
+	-- path, append one line per completed render. tools/bench.sh counts lines
+	-- over a known time window to compute the real per-frame render rate,
+	-- which is normally bounded by ya.image_show + widget draw, not target_fps.
+	local path = os.getenv("VP_DEBUG_RENDER_LOG")
+	if not path or #path == 0 then return end
+	local f = io.open(path, "a")
+	if not f then return end
+	f:write("r\n")
+	f:close()
+end
+
 local function render_playback(job, state, raw_offset)
 	local effective = raw_offset % state.count
 	local img_h = estimate_image_h(job.area.w, job.area.h)
@@ -269,6 +282,7 @@ local function render_playback(job, state, raw_offset)
 	local right = ((#speed_str > 0) and (" " .. speed_str) or "") .. " " .. total_str
 	ya.preview_widget(job, { ui.Text(cur_str .. " " .. bar .. right):area(bar_area) })
 
+	maybe_log_render()
 	return effective
 end
 

@@ -153,9 +153,11 @@ if [[ ! -f "$CDIR/.done" ]]; then
 
   EXTRACT_OK=0
   if (( T <= LOOP_SECONDS )); then
-    # Tier 1 -- Native dense, full decode.
+    # Tier 1 -- Native dense, full decode. -hwaccel auto picks vaapi/cuda/etc.
+    # when available and falls back to software, so it's safe on any host.
     VF="fps=${TARGET_FPS},scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease"
     if ffmpeg -hide_banner -loglevel error -y \
+         -hwaccel auto \
          -ss 0 -t "$T" -i "$FILE_PATH" \
          -vf "$VF" -frames:v "$LOOP_FRAMES" -q:v "$JPG_QUALITY" \
          "$CDIR/%04d.jpg" >/dev/null 2>&1; then
