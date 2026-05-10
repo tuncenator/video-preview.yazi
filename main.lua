@@ -10,7 +10,7 @@ local M = {}
 
 local DEFAULTS = {
 	target_fps = 24,
-	max_seconds = 10, -- cap for long videos: extract first N seconds
+	max_seconds = 30, -- cap for long videos: extract first N seconds
 	short_threshold = 30, -- below this duration, extract the entire clip
 	out_w = 640,
 	out_h = 360,

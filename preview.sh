@@ -21,7 +21,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # Lua sets these via Command:env(...). Defaults match main.lua DEFAULTS.
 TARGET_FPS="${VP_TARGET_FPS:-24}"
-MAX_SECONDS="${VP_MAX_SECONDS:-10}"
+MAX_SECONDS="${VP_MAX_SECONDS:-30}"
 SHORT_THRESHOLD="${VP_SHORT_THRESHOLD:-30}"
 OUT_W="${VP_OUT_W:-640}"
 OUT_H="${VP_OUT_H:-360}"
@@ -88,7 +88,7 @@ if [[ ! -f "$CDIR/.done" ]]; then
     T=$MAX_SECONDS
   fi
 
-  MAX_FRAMES=$(( TARGET_FPS * MAX_SECONDS ))
+  MAX_FRAMES=$(( TARGET_FPS * T ))
   (( MAX_FRAMES < 1 )) && MAX_FRAMES=1
 
   VF="fps=${TARGET_FPS},scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease"
