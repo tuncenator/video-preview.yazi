@@ -167,6 +167,18 @@ local function extract_lazy_slot(file_url, slot, ts, slides)
 	cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.NULL):output()
 end
 
+local function spawn_lazy_prefetch(file_url, slides)
+	-- preview.sh --prefetch self-forks to background, so :output() returns as
+	-- soon as the parent exits (~immediately). The forked child extracts every
+	-- slot in parallel, so subsequent peeks find slots already cached instead
+	-- of blocking on ffmpeg per first visit.
+	local cmd = Command(SCRIPT):arg({ "--path", file_url, "--prefetch" })
+	for k, v in pairs(script_env_for_mode("lazy", slides)) do
+		cmd = cmd:env(k, v)
+	end
+	cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.NULL):output()
+end
+
 local function render_error(job, msg)
 	ya.preview_widget(job, { ui.Text(msg):area(job.area) })
 end
@@ -231,6 +243,7 @@ local function init_state(file_url)
 	local slides = compute_lazy_slides(duration)
 	local p2, err2 = probe_meta(file_url, "lazy", slides)
 	if not p2 then return { error = err2 or "lazy probe failed" } end
+	spawn_lazy_prefetch(file_url, slides)
 	return {
 		mode = "lazy",
 		dir = p2.dir,

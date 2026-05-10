@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # video-preview.yazi extractor.
 #
-# Three sub-modes driven by the lua side:
+# Sub-modes driven by the lua side:
 #  --probe                 print DIR= and DURATION=, no work.
 #  --slot I --ts T         extract one frame at timestamp T into DIR/000I.jpg.
+#  --prefetch              fire-and-forget: extract every lazy slot in parallel
+#                          using VP_LAZY_SLIDES + the source duration. Self-forks
+#                          to background so the lua caller doesn't block.
 #  (no flags)              upfront extraction: full clip -> DIR/0001..NNNN.jpg.
 #
 # Lua picks the mode based on duration: short/mid clips use upfront extraction
 # for smooth animated playback; long clips use per-slot lazy extraction so the
-# UI never blocks for more than one ffmpeg keyframe-seek at a time.
+# UI never blocks for more than one ffmpeg keyframe-seek at a time. For lazy
+# mode, lua kicks off --prefetch on first hover so subsequent peeks find slots
+# already cached instead of blocking on each first visit.
 set -euo pipefail
 IFS=$'\n'
 
@@ -22,6 +27,7 @@ while [[ $# -gt 0 ]]; do
     --probe) MODE="probe";;
     --slot) shift; SLOT="${1:-}"; MODE="slot";;
     --ts)   shift; SLOT_TS="${1:-}";;
+    --prefetch) MODE="prefetch";;
     *) ;;
   esac
   shift || true
@@ -109,6 +115,28 @@ prune_cache() {
 }
 
 # --- slot mode: one keyframe seek, one frame --------------------------------
+# extract_one SLOT TS  --  used by both slot and prefetch modes.
+extract_one() {
+  local _slot="$1" _ts="$2"
+  local _out _tmp
+  _out=$(printf "%s/%04d.jpg" "$CDIR" "$_slot")
+  [[ -f "$_out" ]] && return 0
+  # .tmp.PID would confuse ffmpeg's extension-based muxer detection, so force
+  # -f image2. Atomic mv at the end means peek's fs.cha sees a complete file
+  # or nothing -- never a half-written jpeg.
+  _tmp="${_out}.tmp.${BASHPID:-$$}"
+  if ffmpeg -hide_banner -loglevel error \
+       -ss "$_ts" -i "$FILE_PATH" \
+       -frames:v 1 -an -sn \
+       -vf "scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease" \
+       -q:v "$JPG_QUALITY" -f image2 -y "$_tmp" >/dev/null 2>&1; then
+    mv -f "$_tmp" "$_out" 2>/dev/null
+  else
+    rm -f "$_tmp" 2>/dev/null
+    return 1
+  fi
+}
+
 if [[ "$MODE" == "slot" ]]; then
   if [[ -z "$SLOT" || -z "$SLOT_TS" ]]; then
     echo "ERR=slot_args"
@@ -118,15 +146,42 @@ if [[ "$MODE" == "slot" ]]; then
     echo "ERR=no_ffmpeg"
     exit 0
   fi
-  OUT=$(printf "%s/%04d.jpg" "$CDIR" "$SLOT")
-  # -ss before -i = fast keyframe seek, then one frame. ~100-300ms regardless
-  # of source length.
-  ffmpeg -hide_banner -loglevel error \
-    -ss "$SLOT_TS" -i "$FILE_PATH" \
-    -frames:v 1 \
-    -vf "scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease" \
-    -q:v "$JPG_QUALITY" -y "$OUT" >/dev/null 2>&1 || true
-  echo "IMG=${OUT}"
+  extract_one "$SLOT" "$SLOT_TS" || true
+  echo "IMG=$(printf "%s/%04d.jpg" "$CDIR" "$SLOT")"
+  exit 0
+fi
+
+# --- prefetch mode: parallel-extract every lazy slot in background -----------
+if [[ "$MODE" == "prefetch" ]]; then
+  # Self-fork so the lua caller's :output() returns immediately. The forked
+  # child re-enters this branch with VP_PREFETCH_CHILD set and does the work.
+  if [[ -z "${VP_PREFETCH_CHILD:-}" ]]; then
+    VP_PREFETCH_CHILD=1 nohup "$0" --path "$FILE_PATH" --prefetch \
+      </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    exit 0
+  fi
+
+  if ! have ffmpeg; then exit 0; fi
+  DURATION="$(probe_duration)"
+  DURATION=${DURATION:-0}
+  SLIDES="${VP_LAZY_SLIDES:-0}"
+  (( DURATION <= 0 || SLIDES <= 0 )) && exit 0
+
+  # Cap concurrency so we don't storm CPU/IO. 4 parallel ffmpeg seeks comfort
+  # most modern laptops; each is short-lived (~100-300ms).
+  MAXP=4
+  for ((i=1; i<=SLIDES; i++)); do
+    OUT=$(printf "%s/%04d.jpg" "$CDIR" "$i")
+    [[ -f "$OUT" ]] && continue
+    TS=$(awk -v s="$i" -v n="$SLIDES" -v d="$DURATION" \
+            'BEGIN { printf "%.3f", (s-1)*d/n }')
+    extract_one "$i" "$TS" &
+    while (( $(jobs -r | wc -l) >= MAXP )); do
+      wait -n 2>/dev/null || sleep 0.05
+    done
+  done
+  wait 2>/dev/null
   exit 0
 fi
 
