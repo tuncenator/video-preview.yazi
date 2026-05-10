@@ -13,10 +13,11 @@ local DEFAULTS = {
 	loop_seconds = 30, -- mode 1: D <= this -> upfront native dense extraction.
 	mid_threshold = 300, -- mode 2: loop_seconds < D <= this -> upfront fps-filter timelapse.
 	-- D > mid_threshold -> mode 3: lazy slideshow (one frame per tick).
-	lazy_slide_seconds = 60, -- in mode 3, target one slide per N seconds of source...
-	lazy_min_slides = 10, -- ...clamped between this...
+	lazy_size_bytes = 50 * 1024 * 1024, -- mode 3 also triggers when file size exceeds this, even on short clips (big high-bitrate files decode slow). 0 disables.
+	lazy_slide_seconds = 30, -- in mode 3, target one slide per N seconds of source...
+	lazy_min_slides = 15, -- ...clamped between this...
 	lazy_max_slides = 60, -- ...and this.
-	lazy_tick = 2.0, -- seconds per slide in mode 3.
+	lazy_tick = 1.0, -- seconds per slide in mode 3.
 	out_w = 640,
 	out_h = 360,
 	jpg_quality = 7, -- 1 = best, 31 = worst
@@ -184,13 +185,23 @@ function M:setup(o)
 	return self
 end
 
-local function pick_mode(duration)
+local function pick_mode(duration, size)
 	local loop = opts.loop_seconds or 30
 	local mid = opts.mid_threshold or 300
+	local size_lim = opts.lazy_size_bytes or 0
+	-- File-size override: big-but-short clips (high bitrate) decode slow,
+	-- so route them through lazy mode regardless of duration.
+	if size_lim > 0 and (size or 0) > size_lim then return "lazy" end
 	if duration <= loop then return "native"
 	elseif duration <= mid then return "mid"
 	else return "lazy"
 	end
+end
+
+local function probe_size(file_url)
+	local cha = fs.cha(Url(file_url), false)
+	if not cha then return 0 end
+	return tonumber(cha.len) or 0
 end
 
 local function init_state(file_url)
@@ -205,7 +216,8 @@ local function init_state(file_url)
 		duration = opts.loop_seconds or 30
 	end
 
-	local mode = pick_mode(duration)
+	local size = probe_size(file_url)
+	local mode = pick_mode(duration, size)
 
 	if mode == "native" or mode == "mid" then
 		local res = init_upfront(file_url, "upfront")
