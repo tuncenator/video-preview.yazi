@@ -45,7 +45,7 @@ prepend_previewers = [
 
 | Option            | Type    | Default | Description                                                                                              |
 | ----------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `target_fps`      | integer | `24`    | Playback frame rate of the loop.                                                                         |
+| `target_fps`      | integer | `12`    | Playback frame rate of the loop. Higher = smoother, but most sixel terminals can't sustain >15fps at 640x360. Bump only on fast terminals.                            |
 | `loop_seconds`    | integer | `30`    | Real-time length of the loop. Clips shorter than this loop natively (1x); longer clips are sub-sampled so the entire clip plays back inside `loop_seconds` (timelapse). Floor: 10. |
 | `max_source_seconds` | integer | `600` | Decode at most this many seconds of source. Clips longer than this only summarize their first `max_source_seconds`. `0` disables the cap. Bounds extractor cost on very long files. |
 | `out_w`           | integer | `640`   | Frame width in pixels. Larger = sharper but slower sixel encode.                                         |

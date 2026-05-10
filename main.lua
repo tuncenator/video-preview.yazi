@@ -9,7 +9,7 @@
 local M = {}
 
 local DEFAULTS = {
-	target_fps = 24,
+	target_fps = 12,
 	loop_seconds = 30, -- playback length of the loop. Clips longer than this are speed-fit into it; shorter clips loop natively. Floor: 10.
 	max_source_seconds = 600, -- decode at most this many seconds of source. 0 disables. Bounds extractor cost on very long clips.
 	out_w = 640,
@@ -177,13 +177,22 @@ function M:peek(job)
 
 	local cur_str = fmt_time((effective + 1) * state.source_t / state.count)
 	local total_str = fmt_time(state.source_t)
-	local inner_w = bar_area.w - #cur_str - #total_str - 2
+	local loop_real = state.count / state.fps
+	local speed = (loop_real > 0) and (state.source_t / loop_real) or 1
+	local speed_str = ""
+	if speed >= 1.05 then
+		local rounded = math.floor(speed * 10 + 0.5) / 10
+		speed_str = string.format("%gx", rounded)
+	end
+	local sep = (#speed_str > 0) and 3 or 2
+	local inner_w = bar_area.w - #cur_str - #total_str - #speed_str - sep
 	if inner_w < 1 then inner_w = 1 end
 	local progress = (effective + 1) / state.count
 	local filled = math.floor(progress * inner_w + 0.5)
 	if filled > inner_w then filled = inner_w end
 	local bar = string.rep("\u{2588}", filled) .. string.rep("\u{2591}", inner_w - filled)
-	ya.preview_widget(job, { ui.Text(cur_str .. " " .. bar .. " " .. total_str):area(bar_area) })
+	local right = ((#speed_str > 0) and (" " .. speed_str) or "") .. " " .. total_str
+	ya.preview_widget(job, { ui.Text(cur_str .. " " .. bar .. right):area(bar_area) })
 
 	ya.sleep(opts.tick_seconds)
 	ya.emit("peek", {

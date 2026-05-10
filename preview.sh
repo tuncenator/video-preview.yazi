@@ -21,7 +21,7 @@ done
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # Lua sets these via Command:env(...). Defaults match main.lua DEFAULTS.
-TARGET_FPS="${VP_TARGET_FPS:-24}"
+TARGET_FPS="${VP_TARGET_FPS:-12}"
 LOOP_SECONDS="${VP_LOOP_SECONDS:-30}"
 MAX_SOURCE_SECONDS="${VP_MAX_SOURCE_SECONDS:-600}"
 OUT_W="${VP_OUT_W:-640}"
@@ -80,7 +80,7 @@ prune_cache() {
 T="${LOOP_SECONDS}"
 
 if [[ ! -f "$CDIR/.done" ]]; then
-  prune_cache
+  ( prune_cache ) >/dev/null 2>&1 &
   if ! have ffmpeg; then
     echo "ERR=no_ffmpeg"
     exit 0
