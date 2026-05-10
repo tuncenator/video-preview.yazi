@@ -10,13 +10,17 @@ local M = {}
 
 local DEFAULTS = {
 	target_fps = 12,
-	loop_seconds = 30, -- playback length of the loop. Clips longer than this are speed-fit into it; shorter clips loop natively. Floor: 10.
-	max_source_seconds = 600, -- decode at most this many seconds of source. 0 disables. Bounds extractor cost on very long clips.
-	keyframe_threshold = 300, -- clips longer than this skip to keyframe-only extraction (fast on long files). Shorter clips use fps-filter for even spacing. 0 disables (always fps-filter).
+	loop_seconds = 30, -- mode 1: D <= this -> upfront native dense extraction.
+	mid_threshold = 300, -- mode 2: loop_seconds < D <= this -> upfront fps-filter timelapse.
+	-- D > mid_threshold -> mode 3: lazy slideshow (one frame per tick).
+	lazy_slide_seconds = 60, -- in mode 3, target one slide per N seconds of source...
+	lazy_min_slides = 10, -- ...clamped between this...
+	lazy_max_slides = 60, -- ...and this.
+	lazy_tick = 2.0, -- seconds per slide in mode 3.
 	out_w = 640,
 	out_h = 360,
 	jpg_quality = 7, -- 1 = best, 31 = worst
-	tick_seconds = 0.020, -- yields between frames; render time bounds real fps
+	tick_seconds = 0.020, -- yields between frames; render time bounds real fps (modes 1/2)
 	cache_root = nil, -- defaults to $TMPDIR/yazi-video-preview
 	cache_cap_mb = 1024, -- LRU evict beyond this
 	cache_age_days = 7, -- evict entries not accessed in this many days
@@ -77,86 +81,54 @@ local function fmt_time(sec)
 	return string.format("%d:%02d", m, s)
 end
 
-local function script_env()
+local function script_env_for_mode(mode, slides)
 	local loop = opts.loop_seconds or 30
 	if loop < 10 then loop = 10 end
-	local mss = opts.max_source_seconds or 600
-	if mss < 0 then mss = 0 end
-	local kt = opts.keyframe_threshold or 300
-	if kt < 0 then kt = 0 end
-	return {
+	local env = {
 		VP_TARGET_FPS = tostring(opts.target_fps),
 		VP_LOOP_SECONDS = tostring(loop),
-		VP_MAX_SOURCE_SECONDS = tostring(mss),
-		VP_KEYFRAME_THRESHOLD = tostring(kt),
 		VP_OUT_W = tostring(opts.out_w),
 		VP_OUT_H = tostring(opts.out_h),
 		VP_JPG_QUALITY = tostring(opts.jpg_quality),
 		VP_CACHE_ROOT = opts.cache_root or "",
 		VP_CACHE_CAP_MB = tostring(opts.cache_cap_mb),
 		VP_CACHE_AGE_DAYS = tostring(opts.cache_age_days),
+		VP_MODE = mode,
 	}
+	if mode == "lazy" then
+		env.VP_LAZY_SLIDES = tostring(slides)
+	end
+	return env
 end
 
-local function probe_dir(file_url)
+local function compute_lazy_slides(duration)
+	local per = math.max(1, opts.lazy_slide_seconds or 60)
+	local min_s = math.max(1, opts.lazy_min_slides or 10)
+	local max_s = math.max(min_s, opts.lazy_max_slides or 60)
+	local n = math.floor(duration / per + 0.5)
+	if n < min_s then n = min_s end
+	if n > max_s then n = max_s end
+	return n
+end
+
+local function probe_meta(file_url, mode, slides)
 	local cmd = Command(SCRIPT):arg({ "--path", file_url, "--probe" })
-	for k, v in pairs(script_env()) do
+	for k, v in pairs(script_env_for_mode(mode, slides)) do
 		cmd = cmd:env(k, v)
 	end
 	local out = cmd:stdout(Command.PIPED):stderr(Command.PIPED):output()
 	if not out or not out.stdout then return nil, "probe failed" end
 	local err = out.stdout:match("ERR=(%S+)")
 	if err then return nil, "probe: " .. err end
-	return out.stdout:match("DIR=([^\n]+)")
+	local dir = out.stdout:match("DIR=([^\n]+)")
+	local duration = tonumber(out.stdout:match("DURATION=(%d+)"))
+	if not dir then return nil, "probe: no dir" end
+	return { dir = dir, duration = duration }
 end
 
-local function cache_ready(dir)
-	return fs.cha(Url(dir .. "/.done"), false) ~= nil
-end
-
-local function spawn_extraction(file_url)
-	-- Fire-and-forget: bash backgrounds preview.sh, then exits. output()
-	-- returns as soon as bash returns (~ms). Extraction continues detached.
-	local cmd = Command("bash"):arg({
-		"-c",
-		'"$1" --path "$2" >/dev/null 2>&1 &',
-		"_",
-		SCRIPT,
-		file_url,
-	})
-	for k, v in pairs(script_env()) do
-		cmd = cmd:env(k, v)
-	end
-	cmd:stdout(Command.NULL):stderr(Command.NULL):output()
-end
-
-local function count_jpgs(dir)
-	local entries = fs.read_dir(Url(dir), {})
-	if not entries then return 0 end
-	local n = 0
-	for _, e in ipairs(entries) do
-		local name = tostring(e.name or "")
-		if name:match("%.jpg$") then n = n + 1 end
-	end
-	return n
-end
-
-local function render_loading(job, state)
-	local got = count_jpgs(state.dir)
-	local expected = (opts.loop_seconds or 30) * (opts.target_fps or 12)
-	local pct = math.min(got / expected, 1)
-	local label = string.format(" Loading preview... %d/%d ", got, expected)
-	local bar_w = math.max(1, job.area.w - #label - 2)
-	local filled = math.floor(pct * bar_w + 0.5)
-	if filled > bar_w then filled = bar_w end
-	local bar = string.rep("\u{2588}", filled) .. string.rep("\u{2591}", bar_w - filled)
-	local line = ui.Rect({ x = job.area.x, y = job.area.y, w = job.area.w, h = 1 })
-	ya.preview_widget(job, { ui.Text(label .. bar):area(line) })
-end
-
-local function init_file(file_url)
+local function init_upfront(file_url, mode)
 	local cmd = Command(SCRIPT):arg({ "--path", file_url })
-	for k, v in pairs(script_env()) do
+	for k, v in pairs(script_env_for_mode(mode, 0)) do
 		cmd = cmd:env(k, v)
 	end
 	local out = cmd:stdout(Command.PIPED):stderr(Command.PIPED):output()
@@ -182,6 +154,18 @@ local function init_file(file_url)
 	return { dir = dir, count = count, fps = fps, source_t = source_t }
 end
 
+local function extract_lazy_slot(file_url, slot, ts, slides)
+	local cmd = Command(SCRIPT):arg({
+		"--path", file_url,
+		"--slot", tostring(slot),
+		"--ts", string.format("%.3f", ts),
+	})
+	for k, v in pairs(script_env_for_mode("lazy", slides)) do
+		cmd = cmd:env(k, v)
+	end
+	cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.NULL):output()
+end
+
 local function render_error(job, msg)
 	ya.preview_widget(job, { ui.Text(msg):area(job.area) })
 end
@@ -200,74 +184,56 @@ function M:setup(o)
 	return self
 end
 
-function M:peek(job)
-	local file_url = tostring(job.file.url)
+local function pick_mode(duration)
+	local loop = opts.loop_seconds or 30
+	local mid = opts.mid_threshold or 300
+	if duration <= loop then return "native"
+	elseif duration <= mid then return "mid"
+	else return "lazy"
+	end
+end
 
-	local state = file_state[file_url]
-	if not state then
-		local dir, err = probe_dir(file_url)
-		if not dir then
-			state = { error = err or "probe failed" }
-		elseif cache_ready(dir) then
-			state = init_file(file_url)
-		else
-			state = { dir = dir, status = "loading", retries = 0 }
-			spawn_extraction(file_url)
-		end
-		file_state[file_url] = state
+local function init_state(file_url)
+	-- One probe with mode="upfront" gets us duration and a dir; if duration
+	-- actually puts us in lazy mode, re-probe with mode="lazy" so the dir
+	-- reflects the lazy cache key.
+	local p, err = probe_meta(file_url, "upfront", 0)
+	if not p then return { error = err } end
+	local duration = p.duration or 0
+	if duration <= 0 then
+		-- Treat as native short clip with whatever upfront extraction gives.
+		duration = opts.loop_seconds or 30
 	end
 
-	if state.error then
-		render_error(job, state.error)
-		return
+	local mode = pick_mode(duration)
+
+	if mode == "native" or mode == "mid" then
+		local res = init_upfront(file_url, "upfront")
+		if res.error then return res end
+		res.mode = mode
+		res.duration = duration
+		return res
 	end
 
-	if state.status == "loading" then
-		if cache_ready(state.dir) then
-			-- Extraction done: swap in real metadata. Keeps state table id
-			-- so any other field consumers stay valid.
-			local res = init_file(file_url)
-			if res.error then
-				state.error = res.error
-				render_error(job, state.error)
-				return
-			end
-			state.dir = res.dir
-			state.count = res.count
-			state.fps = res.fps
-			state.source_t = res.source_t
-			state.status = "ready"
-		else
-			render_loading(job, state)
-			state.retries = (state.retries or 0) + 1
-			if state.retries > 600 then
-				state.error = "extraction timed out"
-				render_error(job, state.error)
-				return
-			end
-			ya.sleep(0.2)
-			ya.emit("peek", { tostring(0), only_if = file_url })
-			return
-		end
-	end
+	-- mode == "lazy"
+	local slides = compute_lazy_slides(duration)
+	local p2, err2 = probe_meta(file_url, "lazy", slides)
+	if not p2 then return { error = err2 or "lazy probe failed" } end
+	return {
+		mode = "lazy",
+		dir = p2.dir,
+		duration = duration,
+		count = slides,
+		fps = opts.target_fps or 12,
+		source_t = duration,
+	}
+end
 
-	local raw_offset = tonumber(job.skip) or 0
-	if raw_offset < 0 then raw_offset = 0 end
+local function render_playback(job, state, raw_offset)
 	local effective = raw_offset % state.count
-
 	local img_h = estimate_image_h(job.area.w, job.area.h)
-	local img_area = ui.Rect({
-		x = job.area.x,
-		y = job.area.y,
-		w = job.area.w,
-		h = img_h,
-	})
-	local bar_area = ui.Rect({
-		x = job.area.x,
-		y = job.area.y + img_h,
-		w = job.area.w,
-		h = 1,
-	})
+	local img_area = ui.Rect({ x = job.area.x, y = job.area.y, w = job.area.w, h = img_h })
+	local bar_area = ui.Rect({ x = job.area.x, y = job.area.y + img_h, w = job.area.w, h = 1 })
 
 	local frame_path = state.dir .. "/" .. string.format("%04d.jpg", effective + 1)
 	ya.image_show(Url(frame_path), img_area)
@@ -291,6 +257,50 @@ function M:peek(job)
 	local right = ((#speed_str > 0) and (" " .. speed_str) or "") .. " " .. total_str
 	ya.preview_widget(job, { ui.Text(cur_str .. " " .. bar .. right):area(bar_area) })
 
+	return effective
+end
+
+function M:peek(job)
+	local file_url = tostring(job.file.url)
+
+	local state = file_state[file_url]
+	if not state then
+		state = init_state(file_url)
+		file_state[file_url] = state
+	end
+
+	if state.error then
+		render_error(job, state.error)
+		return
+	end
+
+	local raw_offset = tonumber(job.skip) or 0
+	if raw_offset < 0 then raw_offset = 0 end
+
+	if state.mode == "lazy" then
+		local slot = (raw_offset % state.count) + 1
+		local ts = (slot - 1) * state.duration / state.count
+		local frame_path = state.dir .. "/" .. string.format("%04d.jpg", slot)
+
+		-- Extract this slot synchronously if it isn't cached. One ffmpeg
+		-- keyframe seek = ~100-300ms block, only on the first time each
+		-- slot is hit. Subsequent visits to the same slot are instant.
+		if not fs.cha(Url(frame_path), false) then
+			extract_lazy_slot(file_url, slot, ts, state.count)
+		end
+
+		render_playback(job, state, raw_offset)
+
+		ya.sleep(opts.lazy_tick or 2.0)
+		ya.emit("peek", {
+			tostring((raw_offset + 1) % state.count),
+			only_if = file_url,
+		})
+		return
+	end
+
+	-- modes native / mid: existing animated playback
+	render_playback(job, state, raw_offset)
 	ya.sleep(opts.tick_seconds)
 	ya.emit("peek", {
 		tostring((raw_offset + 1) % math.max(state.count, 1)),
