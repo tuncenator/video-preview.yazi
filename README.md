@@ -45,9 +45,9 @@ prepend_previewers = [
 
 | Option            | Type    | Default | Description                                                                                              |
 | ----------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------- |
-| `target_fps`      | integer | `24`    | Frame rate of the slideshow loop (also dictates source frame extraction rate).                           |
-| `max_seconds`     | integer | `10`    | For long videos, only the first `max_seconds` are extracted; the loop covers that range at native fps.   |
-| `short_threshold` | integer | `30`    | Clips shorter than this many seconds extract their entire duration instead of being capped.              |
+| `target_fps`      | integer | `12`    | Playback frame rate of the loop. Higher = smoother, but most sixel terminals can't sustain >15fps at 640x360. Bump only on fast terminals.                            |
+| `loop_seconds`    | integer | `30`    | Real-time length of the loop. Clips shorter than this loop natively (1x); longer clips are sub-sampled so the entire clip plays back inside `loop_seconds` (timelapse). Floor: 10. |
+| `max_source_seconds` | integer | `600` | Decode at most this many seconds of source. Clips longer than this only summarize their first `max_source_seconds`. `0` disables the cap. Bounds extractor cost on very long files. |
 | `out_w`           | integer | `640`   | Frame width in pixels. Larger = sharper but slower sixel encode.                                         |
 | `out_h`           | integer | `360`   | Frame height in pixels.                                                                                  |
 | `jpg_quality`     | integer | `7`     | ffmpeg `-q:v` for cached JPGs (1=best, 31=worst). Smaller files render faster.                           |
@@ -62,7 +62,7 @@ Example tuned for shorter previews on lower-end hardware:
 ```lua
 require("video-preview"):setup {
   target_fps = 18,
-  max_seconds = 6,
+  loop_seconds = 30,
   out_w = 480,
   out_h = 270,
 }
