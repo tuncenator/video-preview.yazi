@@ -167,6 +167,18 @@ local function extract_lazy_slot(file_url, slot, ts, slides)
 	cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.NULL):output()
 end
 
+local function spawn_lazy_prefetch(file_url, slides)
+	-- preview.sh --prefetch self-forks to background, so :output() returns as
+	-- soon as the parent exits (~immediately). The forked child extracts every
+	-- slot in parallel, so subsequent peeks find slots already cached instead
+	-- of blocking on ffmpeg per first visit.
+	local cmd = Command(SCRIPT):arg({ "--path", file_url, "--prefetch" })
+	for k, v in pairs(script_env_for_mode("lazy", slides)) do
+		cmd = cmd:env(k, v)
+	end
+	cmd:stdin(Command.NULL):stdout(Command.NULL):stderr(Command.NULL):output()
+end
+
 local function render_error(job, msg)
 	ya.preview_widget(job, { ui.Text(msg):area(job.area) })
 end
@@ -231,6 +243,7 @@ local function init_state(file_url)
 	local slides = compute_lazy_slides(duration)
 	local p2, err2 = probe_meta(file_url, "lazy", slides)
 	if not p2 then return { error = err2 or "lazy probe failed" } end
+	spawn_lazy_prefetch(file_url, slides)
 	return {
 		mode = "lazy",
 		dir = p2.dir,
@@ -239,6 +252,19 @@ local function init_state(file_url)
 		fps = opts.target_fps or 12,
 		source_t = duration,
 	}
+end
+
+local function maybe_log_render()
+	-- Env-gated debug hook. When VP_DEBUG_RENDER_LOG points at a writable
+	-- path, append one line per completed render. tools/bench.sh counts lines
+	-- over a known time window to compute the real per-frame render rate,
+	-- which is normally bounded by ya.image_show + widget draw, not target_fps.
+	local path = os.getenv("VP_DEBUG_RENDER_LOG")
+	if not path or #path == 0 then return end
+	local f = io.open(path, "a")
+	if not f then return end
+	f:write("r\n")
+	f:close()
 end
 
 local function render_playback(job, state, raw_offset)
@@ -269,6 +295,7 @@ local function render_playback(job, state, raw_offset)
 	local right = ((#speed_str > 0) and (" " .. speed_str) or "") .. " " .. total_str
 	ya.preview_widget(job, { ui.Text(cur_str .. " " .. bar .. right):area(bar_area) })
 
+	maybe_log_render()
 	return effective
 end
 
