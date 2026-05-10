@@ -1,5 +1,7 @@
 # video-preview.yazi
 
+https://github.com/user-attachments/assets/a166a512-a253-4ea5-9798-58c3955491e2
+
 Animated video preview for Yazi. Picks one of three extraction strategies per file based on duration and size, so short clips get a smooth animated loop and large or long files get a slideshow that doesn't freeze your terminal. Renders a progress bar with current/total timestamps and a speed-up badge for timelapse playback.
 
 ## Requirements

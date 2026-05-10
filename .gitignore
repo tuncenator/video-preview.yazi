@@ -2,3 +2,7 @@
 *.swp
 *.swo
 *~
+
+# Demo clips downloaded for local screen-recording. Big (hundreds of MiB),
+# trivially re-fetched from upstream, not user-facing -- do not commit.
+demo/
